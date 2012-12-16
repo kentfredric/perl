@@ -16,7 +16,7 @@
 #
 # This script is normally invoked from regen.pl.
 
-$VERSION = '1.02_03';
+$VERSION = '1.02_05';
 
 BEGIN {
     require 'regen/regen_lib.pl';
@@ -94,7 +94,10 @@ my $tree = {
                                 'experimental::smartmatch' =>
                                     [ 5.017, DEFAULT_ON ],
                         }],
-
+       	'magic'		=> [ 5.017, {
+                                'env_ref_value' =>
+                                    [ 5.017, DEFAULT_ON ],
+                        }],
        	 #'default'	=> [ 5.008, DEFAULT_ON ],
   	}],
 } ;
