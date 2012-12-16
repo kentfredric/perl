@@ -664,9 +664,14 @@ SKIP: {
 	env_is(foo => '*main::TODO', 'ENV store of stringified glob');
 
 	# stringify a ref
-	my $ref = [];
-	$ENV{foo} = $ref;
-	env_is(foo => "$ref", 'ENV store of stringified ref');
+	{
+	  my $warned = 0;
+	  local $SIG{__WARN__} = sub { ++$warned if $_[0] =~ /^Value stringification in \$ENV/; print "# @_" };
+	  my $ref = [];
+	  $ENV{foo} = $ref;
+	  env_is(foo => "$ref", 'ENV store of stringified ref');
+	  ok($warned == 1, 'ENV store warns about stringification');
+	}
 
 	# downgrade utf8 when possible
 	$bytes = "eh zero \x{A0}";
