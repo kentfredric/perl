@@ -6100,6 +6100,13 @@ C<defined> operator.
 longer than 1024 characters.  The return value has been truncated to
 1024 characters.
 
+=item Value stringification in $ENV{%s} = $value
+
+(S env_ref_value) As of 5.17.3, References inserted as values in C<%ENV> are
+immediately stringified.  Previously, references stored in C<%ENV> could not be
+transported outside the Perl interpreter, and were only stringified by child
+processes. L<perlvar/%ENV>
+
 =item Variable "%s" is not available
 
 (W closure) During compilation, an inner named subroutine or eval is
