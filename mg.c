@@ -1109,6 +1109,12 @@ Perl_magic_setenv(pTHX_ SV *sv, MAGIC *mg)
     if (SvOK(sv)) {
         /* defined environment variables are byte strings; unfortunately
            there is no SvPVbyte_force_nomg(), so we must do this piecewise */
+        if(SvROK(sv)){
+            Perl_ck_warner_d(aTHX_
+                packWARN(WARN_ENV_REF_VALUE),
+                "Value stringification in $ENV{%s} = $value", key
+            );
+        }
         (void)SvPV_force_nomg_nolen(sv);
         sv_utf8_downgrade(sv, /* fail_ok */ TRUE);
         if (SvUTF8(sv)) {
