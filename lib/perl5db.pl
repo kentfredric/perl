@@ -3149,819 +3149,819 @@ again.
 # ( rt#116771 )
 BEGIN {
 
-package DB::Obj;
+    package DB::Obj;
 
-sub new {
-    my $class = shift;
+    sub new {
+        my $class = shift;
 
-    my $self = bless {}, $class;
+        my $self = bless {}, $class;
 
-    $self->_init(@_);
+        $self->_init(@_);
 
-    return $self;
-}
-
-sub _init {
-    my ($self, $args) = @_;
-
-    %{$self} = (%$self, %$args);
-
-    return;
-}
-
-{
-    no strict 'refs';
-    foreach my $slot_name (qw(
-        after explicit_stop infix pat piped position prefix selected cmd_verb
-        cmd_args
-        )) {
-        my $slot = $slot_name;
-        *{$slot} = sub {
-            my $self = shift;
-
-            if (@_) {
-                ${ $self->{$slot} } = shift;
-            }
-
-            return ${ $self->{$slot} };
-        };
-
-        *{"append_to_$slot"} = sub {
-            my $self = shift;
-            my $s = shift;
-
-            return $self->$slot($self->$slot . $s);
-        };
-    }
-}
-
-sub _DB_on_init__initialize_globals
-{
-    my $self = shift;
-
-    # Check for whether we should be running continuously or not.
-    # _After_ the perl program is compiled, $single is set to 1:
-    if ( $single and not $second_time++ ) {
-
-        # Options say run non-stop. Run until we get an interrupt.
-        if ($runnonstop) {    # Disable until signal
-                # If there's any call stack in place, turn off single
-                # stepping into subs throughout the stack.
-            for my $i (0 .. $stack_depth) {
-                $stack[ $i ] &= ~1;
-            }
-
-            # And we are now no longer in single-step mode.
-            $single = 0;
-
-            # If we simply returned at this point, we wouldn't get
-            # the trace info. Fall on through.
-            # return;
-        } ## end if ($runnonstop)
-
-        elsif ($ImmediateStop) {
-
-            # We are supposed to stop here; XXX probably a break.
-            $ImmediateStop = 0;    # We've processed it; turn it off
-            $signal        = 1;    # Simulate an interrupt to force
-                                   # us into the command loop
-        }
-    } ## end if ($single and not $second_time...
-
-    # If we're in single-step mode, or an interrupt (real or fake)
-    # has occurred, turn off non-stop mode.
-    $runnonstop = 0 if $single or $signal;
-
-    return;
-}
-
-sub _my_print_lineinfo
-{
-    my ($self, $i, $incr_pos) = @_;
-
-    if ($frame) {
-        # Print it indented if tracing is on.
-        DB::print_lineinfo( ' ' x $stack_depth,
-            "$i:\t$DB::dbline[$i]" . $self->after );
-    }
-    else {
-        DB::depth_print_lineinfo($self->explicit_stop, $incr_pos);
-    }
-}
-
-sub _curr_line {
-    return $DB::dbline[$line];
-}
-
-sub _is_full {
-    my ($self, $letter) = @_;
-
-    return ($DB::cmd eq $letter);
-}
-
-sub _DB__grab_control
-{
-    my $self = shift;
-
-    # Yes, grab control.
-    if ($slave_editor) {
-
-        # Tell the editor to update its position.
-        $self->position("\032\032${DB::filename}:$line:0\n");
-        DB::print_lineinfo($self->position());
+        return $self;
     }
 
-=pod
+    sub _init {
+        my ($self, $args) = @_;
 
-Special check: if we're in package C<DB::fake>, we've gone through the
-C<END> block at least once. We set up everything so that we can continue
-to enter commands and have a valid context to be in.
+        %{$self} = (%$self, %$args);
 
-=cut
-
-    elsif ( $DB::package eq 'DB::fake' ) {
-
-        # Fallen off the end already.
-        if (!$DB::term) {
-            DB::setterm();
-        }
-
-        DB::print_help(<<EOP);
-Debugged program terminated.  Use B<q> to quit or B<R> to restart,
-use B<o> I<inhibit_exit> to avoid stopping after program termination,
-B<h q>, B<h R> or B<h o> to get additional info.
-EOP
-
-        # Set the DB::eval context appropriately.
-        $DB::package     = 'main';
-        $DB::usercontext = DB::_calc_usercontext($DB::package);
-    } ## end elsif ($package eq 'DB::fake')
-
-=pod
-
-If the program hasn't finished executing, we scan forward to the
-next executable line, print that out, build the prompt from the file and line
-number information, and print that.
-
-=cut
-
-    else {
-
-
-        # Still somewhere in the midst of execution. Set up the
-        #  debugger prompt.
-        $DB::sub =~ s/\'/::/;    # Swap Perl 4 package separators (') to
-                             # Perl 5 ones (sorry, we don't print Klingon
-                             #module names)
-
-        $self->prefix($DB::sub =~ /::/ ? "" : ($DB::package . '::'));
-        $self->append_to_prefix( "$DB::sub(${DB::filename}:" );
-        $self->after( $self->_curr_line =~ /\n$/ ? '' : "\n" );
-
-        # Break up the prompt if it's really long.
-        if ( length($self->prefix()) > 30 ) {
-            $self->position($self->prefix . "$line):\n$line:\t" . $self->_curr_line . $self->after);
-            $self->prefix("");
-            $self->infix(":\t");
-        }
-        else {
-            $self->infix("):\t");
-            $self->position(
-                $self->prefix . $line. $self->infix
-                . $self->_curr_line . $self->after
-            );
-        }
-
-        # Print current line info, indenting if necessary.
-        $self->_my_print_lineinfo($line, $self->position);
-
-        my $i;
-        my $line_i = sub { return $DB::dbline[$i]; };
-
-        # Scan forward, stopping at either the end or the next
-        # unbreakable line.
-        for ( $i = $line + 1 ; $i <= $DB::max && $line_i->() == 0 ; ++$i )
-        {    #{ vi
-
-            # Drop out on null statements, block closers, and comments.
-            last if $line_i->() =~ /^\s*[\;\}\#\n]/;
-
-            # Drop out if the user interrupted us.
-            last if $signal;
-
-            # Append a newline if the line doesn't have one. Can happen
-            # in eval'ed text, for instance.
-            $self->after( $line_i->() =~ /\n$/ ? '' : "\n" );
-
-            # Next executable line.
-            my $incr_pos = $self->prefix . $i . $self->infix . $line_i->()
-                . $self->after;
-            $self->append_to_position($incr_pos);
-            $self->_my_print_lineinfo($i, $incr_pos);
-        } ## end for ($i = $line + 1 ; $i...
-    } ## end else [ if ($slave_editor)
-
-    return;
-}
-
-sub _handle_t_command {
-    my $self = shift;
-
-    my $levels = $self->cmd_args();
-
-    if ((!length($levels)) or ($levels !~ /\D/)) {
-        $trace ^= 1;
-        local $\ = '';
-        $DB::trace_to_depth = $levels ? $stack_depth + $levels : 1E9;
-        print {$OUT} "Trace = "
-        . ( ( $trace & 1 )
-            ? ( $levels ? "on (to level $DB::trace_to_depth)" : "on" )
-            : "off" ) . "\n";
-        next CMD;
+        return;
     }
 
-    return;
-}
+    {
+        no strict 'refs';
+        foreach my $slot_name (qw(
+            after explicit_stop infix pat piped position prefix selected cmd_verb
+            cmd_args
+            )) {
+            my $slot = $slot_name;
+            *{$slot} = sub {
+                my $self = shift;
 
+                if (@_) {
+                    ${ $self->{$slot} } = shift;
+                }
 
-sub _handle_S_command {
-    my $self = shift;
-
-    if (my ($print_all_subs, $should_reverse, $Spatt)
-        = $self->cmd_args =~ /\A((!)?(.+))?\z/) {
-        # $Spatt is the pattern (if any) to use.
-        # Reverse scan?
-        my $Srev     = defined $should_reverse;
-        # No args - print all subs.
-        my $Snocheck = !defined $print_all_subs;
-
-        # Need to make these sane here.
-        local $\ = '';
-        local $, = '';
-
-        # Search through the debugger's magical hash of subs.
-        # If $nocheck is true, just print the sub name.
-        # Otherwise, check it against the pattern. We then use
-        # the XOR trick to reverse the condition as required.
-        foreach $subname ( sort( keys %sub ) ) {
-            if ( $Snocheck or $Srev ^ ( $subname =~ /$Spatt/ ) ) {
-                print $OUT $subname, "\n";
-            }
-        }
-        next CMD;
-    }
-
-    return;
-}
-
-sub _handle_V_command_and_X_command {
-    my $self = shift;
-
-    $DB::cmd =~ s/^X\b/V $DB::package/;
-
-    # Bare V commands get the currently-being-debugged package
-    # added.
-    if ($self->_is_full('V')) {
-        $DB::cmd = "V $DB::package";
-    }
-
-    # V - show variables in package.
-    if (my ($new_packname, $new_vars_str) =
-        $DB::cmd =~ /\AV\b\s*(\S+)\s*(.*)/) {
-
-        # Save the currently selected filehandle and
-        # force output to debugger's filehandle (dumpvar
-        # just does "print" for output).
-        my $savout = select($OUT);
-
-        # Grab package name and variables to dump.
-        $packname = $new_packname;
-        my @vars     = split( ' ', $new_vars_str );
-
-        # If main::dumpvar isn't here, get it.
-        do 'dumpvar.pl' || die $@ unless defined &main::dumpvar;
-        if ( defined &main::dumpvar ) {
-
-            # We got it. Turn off subroutine entry/exit messages
-            # for the moment, along with return values.
-            local $frame = 0;
-            local $doret = -2;
-
-            # must detect sigpipe failures  - not catching
-            # then will cause the debugger to die.
-            eval {
-                main::dumpvar(
-                    $packname,
-                    defined $option{dumpDepth}
-                    ? $option{dumpDepth}
-                    : -1,    # assume -1 unless specified
-                    @vars
-                );
+                return ${ $self->{$slot} };
             };
 
-            # The die doesn't need to include the $@, because
-            # it will automatically get propagated for us.
-            if ($@) {
-                die unless $@ =~ /dumpvar print failed/;
-            }
-        } ## end if (defined &main::dumpvar)
-        else {
+            *{"append_to_$slot"} = sub {
+                my $self = shift;
+                my $s = shift;
 
-            # Couldn't load dumpvar.
-            print $OUT "dumpvar.pl not available.\n";
+                return $self->$slot($self->$slot . $s);
+            };
+        }
+    }
+
+    sub _DB_on_init__initialize_globals
+    {
+        my $self = shift;
+
+        # Check for whether we should be running continuously or not.
+        # _After_ the perl program is compiled, $single is set to 1:
+        if ( $single and not $second_time++ ) {
+
+            # Options say run non-stop. Run until we get an interrupt.
+            if ($runnonstop) {    # Disable until signal
+                    # If there's any call stack in place, turn off single
+                    # stepping into subs throughout the stack.
+                for my $i (0 .. $stack_depth) {
+                    $stack[ $i ] &= ~1;
+                }
+
+                # And we are now no longer in single-step mode.
+                $single = 0;
+
+                # If we simply returned at this point, we wouldn't get
+                # the trace info. Fall on through.
+                # return;
+            } ## end if ($runnonstop)
+
+            elsif ($ImmediateStop) {
+
+                # We are supposed to stop here; XXX probably a break.
+                $ImmediateStop = 0;    # We've processed it; turn it off
+                $signal        = 1;    # Simulate an interrupt to force
+                                       # us into the command loop
+            }
+        } ## end if ($single and not $second_time...
+
+        # If we're in single-step mode, or an interrupt (real or fake)
+        # has occurred, turn off non-stop mode.
+        $runnonstop = 0 if $single or $signal;
+
+        return;
+    }
+
+    sub _my_print_lineinfo
+    {
+        my ($self, $i, $incr_pos) = @_;
+
+        if ($frame) {
+            # Print it indented if tracing is on.
+            DB::print_lineinfo( ' ' x $stack_depth,
+                "$i:\t$DB::dbline[$i]" . $self->after );
+        }
+        else {
+            DB::depth_print_lineinfo($self->explicit_stop, $incr_pos);
+        }
+    }
+
+    sub _curr_line {
+        return $DB::dbline[$line];
+    }
+
+    sub _is_full {
+        my ($self, $letter) = @_;
+
+        return ($DB::cmd eq $letter);
+    }
+
+    sub _DB__grab_control
+    {
+        my $self = shift;
+
+        # Yes, grab control.
+        if ($slave_editor) {
+
+            # Tell the editor to update its position.
+            $self->position("\032\032${DB::filename}:$line:0\n");
+            DB::print_lineinfo($self->position());
         }
 
-        # Restore the output filehandle, and go round again.
-        select($savout);
-        next CMD;
+    =pod
+
+    Special check: if we're in package C<DB::fake>, we've gone through the
+    C<END> block at least once. We set up everything so that we can continue
+    to enter commands and have a valid context to be in.
+
+    =cut
+
+        elsif ( $DB::package eq 'DB::fake' ) {
+
+            # Fallen off the end already.
+            if (!$DB::term) {
+                DB::setterm();
+            }
+
+            DB::print_help(<<EOP);
+    Debugged program terminated.  Use B<q> to quit or B<R> to restart,
+    use B<o> I<inhibit_exit> to avoid stopping after program termination,
+    B<h q>, B<h R> or B<h o> to get additional info.
+    EOP
+
+            # Set the DB::eval context appropriately.
+            $DB::package     = 'main';
+            $DB::usercontext = DB::_calc_usercontext($DB::package);
+        } ## end elsif ($package eq 'DB::fake')
+
+    =pod
+
+    If the program hasn't finished executing, we scan forward to the
+    next executable line, print that out, build the prompt from the file and line
+    number information, and print that.
+
+    =cut
+
+        else {
+
+
+            # Still somewhere in the midst of execution. Set up the
+            #  debugger prompt.
+            $DB::sub =~ s/\'/::/;    # Swap Perl 4 package separators (') to
+                                 # Perl 5 ones (sorry, we don't print Klingon
+                                 #module names)
+
+            $self->prefix($DB::sub =~ /::/ ? "" : ($DB::package . '::'));
+            $self->append_to_prefix( "$DB::sub(${DB::filename}:" );
+            $self->after( $self->_curr_line =~ /\n$/ ? '' : "\n" );
+
+            # Break up the prompt if it's really long.
+            if ( length($self->prefix()) > 30 ) {
+                $self->position($self->prefix . "$line):\n$line:\t" . $self->_curr_line . $self->after);
+                $self->prefix("");
+                $self->infix(":\t");
+            }
+            else {
+                $self->infix("):\t");
+                $self->position(
+                    $self->prefix . $line. $self->infix
+                    . $self->_curr_line . $self->after
+                );
+            }
+
+            # Print current line info, indenting if necessary.
+            $self->_my_print_lineinfo($line, $self->position);
+
+            my $i;
+            my $line_i = sub { return $DB::dbline[$i]; };
+
+            # Scan forward, stopping at either the end or the next
+            # unbreakable line.
+            for ( $i = $line + 1 ; $i <= $DB::max && $line_i->() == 0 ; ++$i )
+            {    #{ vi
+
+                # Drop out on null statements, block closers, and comments.
+                last if $line_i->() =~ /^\s*[\;\}\#\n]/;
+
+                # Drop out if the user interrupted us.
+                last if $signal;
+
+                # Append a newline if the line doesn't have one. Can happen
+                # in eval'ed text, for instance.
+                $self->after( $line_i->() =~ /\n$/ ? '' : "\n" );
+
+                # Next executable line.
+                my $incr_pos = $self->prefix . $i . $self->infix . $line_i->()
+                    . $self->after;
+                $self->append_to_position($incr_pos);
+                $self->_my_print_lineinfo($i, $incr_pos);
+            } ## end for ($i = $line + 1 ; $i...
+        } ## end else [ if ($slave_editor)
+
+        return;
     }
 
-    return;
-}
+    sub _handle_t_command {
+        my $self = shift;
 
-sub _handle_dash_command {
-    my $self = shift;
+        my $levels = $self->cmd_args();
 
-    if ($self->_is_full('-')) {
+        if ((!length($levels)) or ($levels !~ /\D/)) {
+            $trace ^= 1;
+            local $\ = '';
+            $DB::trace_to_depth = $levels ? $stack_depth + $levels : 1E9;
+            print {$OUT} "Trace = "
+            . ( ( $trace & 1 )
+                ? ( $levels ? "on (to level $DB::trace_to_depth)" : "on" )
+                : "off" ) . "\n";
+            next CMD;
+        }
 
-        # back up by a window; go to 1 if back too far.
-        $start -= $incr + $window + 1;
-        $start = 1 if $start <= 0;
-        $incr  = $window - 1;
-
-        # Generate and execute a "l +" command (handled below).
-        $DB::cmd = 'l ' . ($start) . '+';
-        redo CMD;
-    }
-    return;
-}
-
-sub _n_or_s_commands_generic {
-    my ($self, $new_val) = @_;
-    # n - next
-    next CMD if DB::_DB__is_finished();
-
-    # Single step, but don't enter subs.
-    $single = $new_val;
-
-    # Save for empty command (repeat last).
-    $laststep = $DB::cmd;
-    last CMD;
-}
-
-sub _n_or_s {
-    my ($self, $letter, $new_val) = @_;
-
-    if ($self->_is_full($letter)) {
-        $self->_n_or_s_commands_generic($new_val);
-    }
-    else {
-        $self->_n_or_s_and_arg_commands_generic($letter, $new_val);
+        return;
     }
 
-    return;
-}
 
-sub _handle_n_command {
-    my $self = shift;
+    sub _handle_S_command {
+        my $self = shift;
 
-    return $self->_n_or_s('n', 2);
-}
+        if (my ($print_all_subs, $should_reverse, $Spatt)
+            = $self->cmd_args =~ /\A((!)?(.+))?\z/) {
+            # $Spatt is the pattern (if any) to use.
+            # Reverse scan?
+            my $Srev     = defined $should_reverse;
+            # No args - print all subs.
+            my $Snocheck = !defined $print_all_subs;
 
-sub _handle_s_command {
-    my $self = shift;
+            # Need to make these sane here.
+            local $\ = '';
+            local $, = '';
 
-    return $self->_n_or_s('s', 1);
-}
+            # Search through the debugger's magical hash of subs.
+            # If $nocheck is true, just print the sub name.
+            # Otherwise, check it against the pattern. We then use
+            # the XOR trick to reverse the condition as required.
+            foreach $subname ( sort( keys %sub ) ) {
+                if ( $Snocheck or $Srev ^ ( $subname =~ /$Spatt/ ) ) {
+                    print $OUT $subname, "\n";
+                }
+            }
+            next CMD;
+        }
 
-sub _handle_r_command {
-    my $self = shift;
+        return;
+    }
 
-    # r - return from the current subroutine.
-    if ($self->_is_full('r')) {
+    sub _handle_V_command_and_X_command {
+        my $self = shift;
 
-        # Can't do anything if the program's over.
+        $DB::cmd =~ s/^X\b/V $DB::package/;
+
+        # Bare V commands get the currently-being-debugged package
+        # added.
+        if ($self->_is_full('V')) {
+            $DB::cmd = "V $DB::package";
+        }
+
+        # V - show variables in package.
+        if (my ($new_packname, $new_vars_str) =
+            $DB::cmd =~ /\AV\b\s*(\S+)\s*(.*)/) {
+
+            # Save the currently selected filehandle and
+            # force output to debugger's filehandle (dumpvar
+            # just does "print" for output).
+            my $savout = select($OUT);
+
+            # Grab package name and variables to dump.
+            $packname = $new_packname;
+            my @vars     = split( ' ', $new_vars_str );
+
+            # If main::dumpvar isn't here, get it.
+            do 'dumpvar.pl' || die $@ unless defined &main::dumpvar;
+            if ( defined &main::dumpvar ) {
+
+                # We got it. Turn off subroutine entry/exit messages
+                # for the moment, along with return values.
+                local $frame = 0;
+                local $doret = -2;
+
+                # must detect sigpipe failures  - not catching
+                # then will cause the debugger to die.
+                eval {
+                    main::dumpvar(
+                        $packname,
+                        defined $option{dumpDepth}
+                        ? $option{dumpDepth}
+                        : -1,    # assume -1 unless specified
+                        @vars
+                    );
+                };
+
+                # The die doesn't need to include the $@, because
+                # it will automatically get propagated for us.
+                if ($@) {
+                    die unless $@ =~ /dumpvar print failed/;
+                }
+            } ## end if (defined &main::dumpvar)
+            else {
+
+                # Couldn't load dumpvar.
+                print $OUT "dumpvar.pl not available.\n";
+            }
+
+            # Restore the output filehandle, and go round again.
+            select($savout);
+            next CMD;
+        }
+
+        return;
+    }
+
+    sub _handle_dash_command {
+        my $self = shift;
+
+        if ($self->_is_full('-')) {
+
+            # back up by a window; go to 1 if back too far.
+            $start -= $incr + $window + 1;
+            $start = 1 if $start <= 0;
+            $incr  = $window - 1;
+
+            # Generate and execute a "l +" command (handled below).
+            $DB::cmd = 'l ' . ($start) . '+';
+            redo CMD;
+        }
+        return;
+    }
+
+    sub _n_or_s_commands_generic {
+        my ($self, $new_val) = @_;
+        # n - next
         next CMD if DB::_DB__is_finished();
 
-        # Turn on stack trace.
-        $stack[$stack_depth] |= 1;
+        # Single step, but don't enter subs.
+        $single = $new_val;
 
-        # Print return value unless the stack is empty.
-        $doret = $option{PrintRet} ? $stack_depth - 1 : -2;
+        # Save for empty command (repeat last).
+        $laststep = $DB::cmd;
         last CMD;
     }
 
-    return;
-}
+    sub _n_or_s {
+        my ($self, $letter, $new_val) = @_;
 
-sub _handle_T_command {
-    my $self = shift;
-
-    if ($self->_is_full('T')) {
-        DB::print_trace( $OUT, 1 );    # skip DB
-        next CMD;
-    }
-
-    return;
-}
-
-sub _handle_w_command {
-    my $self = shift;
-
-    DB::cmd_w( 'w', $self->cmd_args() );
-    next CMD;
-
-    return;
-}
-
-sub _handle_W_command {
-    my $self = shift;
-
-    if (my $arg = $self->cmd_args) {
-        DB::cmd_W( 'W', $arg );
-        next CMD;
-    }
-
-    return;
-}
-
-sub _handle_rc_recall_command {
-    my $self = shift;
-
-    # $rc - recall command.
-    if (my ($minus, $arg) = $DB::cmd =~ m#\A$rc+\s*(-)?(\d+)?\z#) {
-
-        # No arguments, take one thing off history.
-        pop(@hist) if length($DB::cmd) > 1;
-
-        # Relative (- found)?
-        #  Y - index back from most recent (by 1 if bare minus)
-        #  N - go to that particular command slot or the last
-        #      thing if nothing following.
-
-        $self->cmd_verb(
-            scalar($minus ? ( $#hist - ( $arg || 1 ) ) : ( $arg || $#hist ))
-        );
-
-        # Pick out the command desired.
-        $DB::cmd = $hist[$self->cmd_verb];
-
-        # Print the command to be executed and restart the loop
-        # with that command in the buffer.
-        print {$OUT} $DB::cmd, "\n";
-        redo CMD;
-    }
-
-    return;
-}
-
-sub _handle_rc_search_history_command {
-    my $self = shift;
-
-    # $rc pattern $rc - find a command in the history.
-    if (my ($arg) = $DB::cmd =~ /\A$rc([^$rc].*)\z/) {
-
-        # Create the pattern to use.
-        my $pat = "^$arg";
-        $self->pat($pat);
-
-        # Toss off last entry if length is >1 (and it always is).
-        pop(@hist) if length($DB::cmd) > 1;
-
-        my $i;
-
-        # Look backward through the history.
-        SEARCH_HIST:
-        for ( $i = $#hist ; $i ; --$i ) {
-            # Stop if we find it.
-            last SEARCH_HIST if $hist[$i] =~ /$pat/;
+        if ($self->_is_full($letter)) {
+            $self->_n_or_s_commands_generic($new_val);
+        }
+        else {
+            $self->_n_or_s_and_arg_commands_generic($letter, $new_val);
         }
 
-        if ( !$i ) {
+        return;
+    }
 
-            # Never found it.
-            print $OUT "No such command!\n\n";
+    sub _handle_n_command {
+        my $self = shift;
+
+        return $self->_n_or_s('n', 2);
+    }
+
+    sub _handle_s_command {
+        my $self = shift;
+
+        return $self->_n_or_s('s', 1);
+    }
+
+    sub _handle_r_command {
+        my $self = shift;
+
+        # r - return from the current subroutine.
+        if ($self->_is_full('r')) {
+
+            # Can't do anything if the program's over.
+            next CMD if DB::_DB__is_finished();
+
+            # Turn on stack trace.
+            $stack[$stack_depth] |= 1;
+
+            # Print return value unless the stack is empty.
+            $doret = $option{PrintRet} ? $stack_depth - 1 : -2;
+            last CMD;
+        }
+
+        return;
+    }
+
+    sub _handle_T_command {
+        my $self = shift;
+
+        if ($self->_is_full('T')) {
+            DB::print_trace( $OUT, 1 );    # skip DB
             next CMD;
         }
 
-        # Found it. Put it in the buffer, print it, and process it.
-        $DB::cmd = $hist[$i];
-        print $OUT $DB::cmd, "\n";
-        redo CMD;
+        return;
     }
 
-    return;
-}
+    sub _handle_w_command {
+        my $self = shift;
 
-sub _handle_H_command {
-    my $self = shift;
-
-    if ($self->cmd_args =~ m#\A\*#) {
-        @hist = @truehist = ();
-        print $OUT "History cleansed\n";
+        DB::cmd_w( 'w', $self->cmd_args() );
         next CMD;
+
+        return;
     }
 
-    if (my ($num) = $self->cmd_args =~ /\A(?:-(\d+))?/) {
+    sub _handle_W_command {
+        my $self = shift;
 
-        # Anything other than negative numbers is ignored by
-        # the (incorrect) pattern, so this test does nothing.
-        $end = $num ? ( $#hist - $num ) : 0;
-
-        # Set to the minimum if less than zero.
-        $hist = 0 if $hist < 0;
-
-        # Start at the end of the array.
-        # Stay in while we're still above the ending value.
-        # Tick back by one each time around the loop.
-        my $i;
-
-        for ( $i = $#hist ; $i > $end ; $i-- ) {
-
-            # Print the command  unless it has no arguments.
-            print $OUT "$i: ", $hist[$i], "\n"
-            unless $hist[$i] =~ /^.?$/;
+        if (my $arg = $self->cmd_args) {
+            DB::cmd_W( 'W', $arg );
+            next CMD;
         }
 
-        next CMD;
+        return;
     }
 
-    return;
-}
+    sub _handle_rc_recall_command {
+        my $self = shift;
 
-sub _handle_doc_command {
-    my $self = shift;
+        # $rc - recall command.
+        if (my ($minus, $arg) = $DB::cmd =~ m#\A$rc+\s*(-)?(\d+)?\z#) {
 
-    # man, perldoc, doc - show manual pages.
-    if (my ($man_page)
-        = $DB::cmd =~ /\A(?:man|(?:perl)?doc)\b(?:\s+([^(]*))?\z/) {
-        runman($man_page);
-        next CMD;
-    }
+            # No arguments, take one thing off history.
+            pop(@hist) if length($DB::cmd) > 1;
 
-    return;
-}
+            # Relative (- found)?
+            #  Y - index back from most recent (by 1 if bare minus)
+            #  N - go to that particular command slot or the last
+            #      thing if nothing following.
 
-sub _handle_p_command {
-    my $self = shift;
+            $self->cmd_verb(
+                scalar($minus ? ( $#hist - ( $arg || 1 ) ) : ( $arg || $#hist ))
+            );
 
-    my $print_cmd = 'print {$DB::OUT} ';
-    # p - print (no args): print $_.
-    if ($self->_is_full('p')) {
-        $DB::cmd = $print_cmd . '$_';
-    }
-    else {
-        # p - print the given expression.
-        $DB::cmd =~ s/\Ap\b/$print_cmd /;
-    }
+            # Pick out the command desired.
+            $DB::cmd = $hist[$self->cmd_verb];
 
-    return;
-}
-
-sub _handle_equal_sign_command {
-    my $self = shift;
-
-    if ($DB::cmd =~ s/\A=\s*//) {
-        my @keys;
-        if ( length $DB::cmd == 0 ) {
-
-            # No args, get current aliases.
-            @keys = sort keys %alias;
+            # Print the command to be executed and restart the loop
+            # with that command in the buffer.
+            print {$OUT} $DB::cmd, "\n";
+            redo CMD;
         }
-        elsif ( my ( $k, $v ) = ( $DB::cmd =~ /^(\S+)\s+(\S.*)/ ) ) {
 
-            # Creating a new alias. $k is alias name, $v is
-            # alias value.
+        return;
+    }
 
-            # can't use $_ or kill //g state
-            for my $x ( $k, $v ) {
+    sub _handle_rc_search_history_command {
+        my $self = shift;
 
-                # Escape "alarm" characters.
-                $x =~ s/\a/\\a/g;
+        # $rc pattern $rc - find a command in the history.
+        if (my ($arg) = $DB::cmd =~ /\A$rc([^$rc].*)\z/) {
+
+            # Create the pattern to use.
+            my $pat = "^$arg";
+            $self->pat($pat);
+
+            # Toss off last entry if length is >1 (and it always is).
+            pop(@hist) if length($DB::cmd) > 1;
+
+            my $i;
+
+            # Look backward through the history.
+            SEARCH_HIST:
+            for ( $i = $#hist ; $i ; --$i ) {
+                # Stop if we find it.
+                last SEARCH_HIST if $hist[$i] =~ /$pat/;
             }
 
-            # Substitute key for value, using alarm chars
-            # as separators (which is why we escaped them in
-            # the command).
-            $alias{$k} = "s\a$k\a$v\a";
+            if ( !$i ) {
 
-            # Turn off standard warn and die behavior.
-            local $SIG{__DIE__};
-            local $SIG{__WARN__};
-
-            # Is it valid Perl?
-            unless ( eval "sub { s\a$k\a$v\a }; 1" ) {
-
-                # Nope. Bad alias. Say so and get out.
-                print $OUT "Can't alias $k to $v: $@\n";
-                delete $alias{$k};
+                # Never found it.
+                print $OUT "No such command!\n\n";
                 next CMD;
             }
 
-            # We'll only list the new one.
-            @keys = ($k);
-        } ## end elsif (my ($k, $v) = ($DB::cmd...
-
-        # The argument is the alias to list.
-        else {
-            @keys = ($DB::cmd);
+            # Found it. Put it in the buffer, print it, and process it.
+            $DB::cmd = $hist[$i];
+            print $OUT $DB::cmd, "\n";
+            redo CMD;
         }
 
-        # List aliases.
-        for my $k (@keys) {
+        return;
+    }
 
-            # Messy metaquoting: Trim the substitution code off.
-            # We use control-G as the delimiter because it's not
-            # likely to appear in the alias.
-            if ( ( my $v = $alias{$k} ) =~ ss\a$k\a(.*)\a$1 ) {
+    sub _handle_H_command {
+        my $self = shift;
 
-                # Print the alias.
-                print $OUT "$k\t= $1\n";
+        if ($self->cmd_args =~ m#\A\*#) {
+            @hist = @truehist = ();
+            print $OUT "History cleansed\n";
+            next CMD;
+        }
+
+        if (my ($num) = $self->cmd_args =~ /\A(?:-(\d+))?/) {
+
+            # Anything other than negative numbers is ignored by
+            # the (incorrect) pattern, so this test does nothing.
+            $end = $num ? ( $#hist - $num ) : 0;
+
+            # Set to the minimum if less than zero.
+            $hist = 0 if $hist < 0;
+
+            # Start at the end of the array.
+            # Stay in while we're still above the ending value.
+            # Tick back by one each time around the loop.
+            my $i;
+
+            for ( $i = $#hist ; $i > $end ; $i-- ) {
+
+                # Print the command  unless it has no arguments.
+                print $OUT "$i: ", $hist[$i], "\n"
+                unless $hist[$i] =~ /^.?$/;
             }
-            elsif ( defined $alias{$k} ) {
 
-                # Couldn't trim it off; just print the alias code.
-                print $OUT "$k\t$alias{$k}\n";
+            next CMD;
+        }
+
+        return;
+    }
+
+    sub _handle_doc_command {
+        my $self = shift;
+
+        # man, perldoc, doc - show manual pages.
+        if (my ($man_page)
+            = $DB::cmd =~ /\A(?:man|(?:perl)?doc)\b(?:\s+([^(]*))?\z/) {
+            runman($man_page);
+            next CMD;
+        }
+
+        return;
+    }
+
+    sub _handle_p_command {
+        my $self = shift;
+
+        my $print_cmd = 'print {$DB::OUT} ';
+        # p - print (no args): print $_.
+        if ($self->_is_full('p')) {
+            $DB::cmd = $print_cmd . '$_';
+        }
+        else {
+            # p - print the given expression.
+            $DB::cmd =~ s/\Ap\b/$print_cmd /;
+        }
+
+        return;
+    }
+
+    sub _handle_equal_sign_command {
+        my $self = shift;
+
+        if ($DB::cmd =~ s/\A=\s*//) {
+            my @keys;
+            if ( length $DB::cmd == 0 ) {
+
+                # No args, get current aliases.
+                @keys = sort keys %alias;
+            }
+            elsif ( my ( $k, $v ) = ( $DB::cmd =~ /^(\S+)\s+(\S.*)/ ) ) {
+
+                # Creating a new alias. $k is alias name, $v is
+                # alias value.
+
+                # can't use $_ or kill //g state
+                for my $x ( $k, $v ) {
+
+                    # Escape "alarm" characters.
+                    $x =~ s/\a/\\a/g;
+                }
+
+                # Substitute key for value, using alarm chars
+                # as separators (which is why we escaped them in
+                # the command).
+                $alias{$k} = "s\a$k\a$v\a";
+
+                # Turn off standard warn and die behavior.
+                local $SIG{__DIE__};
+                local $SIG{__WARN__};
+
+                # Is it valid Perl?
+                unless ( eval "sub { s\a$k\a$v\a }; 1" ) {
+
+                    # Nope. Bad alias. Say so and get out.
+                    print $OUT "Can't alias $k to $v: $@\n";
+                    delete $alias{$k};
+                    next CMD;
+                }
+
+                # We'll only list the new one.
+                @keys = ($k);
+            } ## end elsif (my ($k, $v) = ($DB::cmd...
+
+            # The argument is the alias to list.
+            else {
+                @keys = ($DB::cmd);
+            }
+
+            # List aliases.
+            for my $k (@keys) {
+
+                # Messy metaquoting: Trim the substitution code off.
+                # We use control-G as the delimiter because it's not
+                # likely to appear in the alias.
+                if ( ( my $v = $alias{$k} ) =~ ss\a$k\a(.*)\a$1 ) {
+
+                    # Print the alias.
+                    print $OUT "$k\t= $1\n";
+                }
+                elsif ( defined $alias{$k} ) {
+
+                    # Couldn't trim it off; just print the alias code.
+                    print $OUT "$k\t$alias{$k}\n";
+                }
+                else {
+
+                    # No such, dude.
+                    print "No alias for $k\n";
+                }
+            } ## end for my $k (@keys)
+            next CMD;
+        }
+
+        return;
+    }
+
+    sub _handle_source_command {
+        my $self = shift;
+
+        # source - read commands from a file (or pipe!) and execute.
+        if (my $sourced_fn = $self->cmd_args) {
+            if ( open my $fh, $sourced_fn ) {
+
+                # Opened OK; stick it in the list of file handles.
+                push @cmdfhs, $fh;
             }
             else {
 
-                # No such, dude.
-                print "No alias for $k\n";
+                # Couldn't open it.
+                DB::_db_warn("Can't execute '$sourced_fn': $!\n");
             }
-        } ## end for my $k (@keys)
-        next CMD;
+            next CMD;
+        }
+
+        return;
     }
 
-    return;
-}
+    sub _handle_enable_disable_commands {
+        my $self = shift;
 
-sub _handle_source_command {
-    my $self = shift;
+        my $which_cmd = $self->cmd_verb;
+        my $position = $self->cmd_args;
 
-    # source - read commands from a file (or pipe!) and execute.
-    if (my $sourced_fn = $self->cmd_args) {
-        if ( open my $fh, $sourced_fn ) {
+        if ($position !~ /\s/) {
+            my ($fn, $line_num);
+            if ($position =~ m{\A\d+\z})
+            {
+                $fn = $DB::filename;
+                $line_num = $position;
+            }
+            elsif (my ($new_fn, $new_line_num)
+                = $position =~ m{\A(.*):(\d+)\z}) {
+                ($fn, $line_num) = ($new_fn, $new_line_num);
+            }
+            else
+            {
+                DB::_db_warn("Wrong spec for enable/disable argument.\n");
+            }
 
-            # Opened OK; stick it in the list of file handles.
-            push @cmdfhs, $fh;
+            if (defined($fn)) {
+                if (DB::_has_breakpoint_data_ref($fn, $line_num)) {
+                    DB::_set_breakpoint_enabled_status($fn, $line_num,
+                        ($which_cmd eq 'enable' ? 1 : '')
+                    );
+                }
+                else {
+                    DB::_db_warn("No breakpoint set at ${fn}:${line_num}\n");
+                }
+            }
+
+            next CMD;
         }
-        else {
 
-            # Couldn't open it.
-            DB::_db_warn("Can't execute '$sourced_fn': $!\n");
-        }
-        next CMD;
+        return;
     }
 
-    return;
-}
+    sub _handle_save_command {
+        my $self = shift;
 
-sub _handle_enable_disable_commands {
-    my $self = shift;
+        if (my $new_fn = $self->cmd_args) {
+            my $filename = $new_fn || '.perl5dbrc';    # default?
+            if ( open my $fh, '>', $filename ) {
 
-    my $which_cmd = $self->cmd_verb;
-    my $position = $self->cmd_args;
-
-    if ($position !~ /\s/) {
-        my ($fn, $line_num);
-        if ($position =~ m{\A\d+\z})
-        {
-            $fn = $DB::filename;
-            $line_num = $position;
-        }
-        elsif (my ($new_fn, $new_line_num)
-            = $position =~ m{\A(.*):(\d+)\z}) {
-            ($fn, $line_num) = ($new_fn, $new_line_num);
-        }
-        else
-        {
-            DB::_db_warn("Wrong spec for enable/disable argument.\n");
-        }
-
-        if (defined($fn)) {
-            if (DB::_has_breakpoint_data_ref($fn, $line_num)) {
-                DB::_set_breakpoint_enabled_status($fn, $line_num,
-                    ($which_cmd eq 'enable' ? 1 : '')
-                );
+                # chomp to remove extraneous newlines from source'd files
+                chomp( my @truelist =
+                    map { m/\A\s*(save|source)/ ? "#$_" : $_ }
+                    @truehist );
+                print {$fh} join( "\n", @truelist );
+                print "commands saved in $filename\n";
             }
             else {
-                DB::_db_warn("No breakpoint set at ${fn}:${line_num}\n");
+                DB::_db_warn("Can't save debugger commands in '$new_fn': $!\n");
+            }
+            next CMD;
+        }
+
+        return;
+    }
+
+    sub _n_or_s_and_arg_commands_generic {
+        my ($self, $letter, $new_val) = @_;
+
+        # s - single-step. Remember the last command was 's'.
+        if ($DB::cmd =~ s#\A\Q$letter\E\s#\$DB::single = $new_val;\n#) {
+            $laststep = $letter;
+        }
+
+        return;
+    }
+
+    sub _handle_sh_command {
+        my $self = shift;
+
+        # $sh$sh - run a shell command (if it's all ASCII).
+        # Can't run shell commands with Unicode in the debugger, hmm.
+        my $my_cmd = $DB::cmd;
+        if ($my_cmd =~ m#\A$sh#gms) {
+
+            if ($my_cmd =~ m#\G\z#cgms) {
+                # Run the user's shell. If none defined, run Bourne.
+                # We resume execution when the shell terminates.
+                DB::_db_system( $ENV{SHELL} || "/bin/sh" );
+                next CMD;
+            }
+            elsif ($my_cmd =~ m#\G$sh\s*(.*)#cgms) {
+                # System it.
+                DB::_db_system($1);
+                next CMD;
+            }
+            elsif ($my_cmd =~ m#\G\s*(.*)#cgms) {
+                DB::_db_system( $ENV{SHELL} || "/bin/sh", "-c", $1 );
+                next CMD;
+            }
+        }
+    }
+
+    sub _handle_x_command {
+        my $self = shift;
+
+        if ($DB::cmd =~ s#\Ax\b# #) {    # Remainder gets done by DB::eval()
+            $onetimeDump = 'dump';    # main::dumpvar shows the output
+
+            # handle special  "x 3 blah" syntax XXX propagate
+            # doc back to special variables.
+            if ( $DB::cmd =~ s#\A\s*(\d+)(?=\s)# #) {
+                $onetimedumpDepth = $1;
             }
         }
 
+        return;
+    }
+
+    sub _handle_q_command {
+        my $self = shift;
+
+        if ($self->_is_full('q')) {
+            $fall_off_end = 1;
+            DB::clean_ENV();
+            exit $?;
+        }
+
+        return;
+    }
+
+    sub _handle_cmd_wrapper_commands {
+        my $self = shift;
+
+        DB::cmd_wrapper( $self->cmd_verb, $self->cmd_args, $line );
         next CMD;
     }
 
-    return;
-}
+    sub _handle_special_char_cmd_wrapper_commands {
+        my $self = shift;
 
-sub _handle_save_command {
-    my $self = shift;
-
-    if (my $new_fn = $self->cmd_args) {
-        my $filename = $new_fn || '.perl5dbrc';    # default?
-        if ( open my $fh, '>', $filename ) {
-
-            # chomp to remove extraneous newlines from source'd files
-            chomp( my @truelist =
-                map { m/\A\s*(save|source)/ ? "#$_" : $_ }
-                @truehist );
-            print {$fh} join( "\n", @truelist );
-            print "commands saved in $filename\n";
-        }
-        else {
-            DB::_db_warn("Can't save debugger commands in '$new_fn': $!\n");
-        }
-        next CMD;
-    }
-
-    return;
-}
-
-sub _n_or_s_and_arg_commands_generic {
-    my ($self, $letter, $new_val) = @_;
-
-    # s - single-step. Remember the last command was 's'.
-    if ($DB::cmd =~ s#\A\Q$letter\E\s#\$DB::single = $new_val;\n#) {
-        $laststep = $letter;
-    }
-
-    return;
-}
-
-sub _handle_sh_command {
-    my $self = shift;
-
-    # $sh$sh - run a shell command (if it's all ASCII).
-    # Can't run shell commands with Unicode in the debugger, hmm.
-    my $my_cmd = $DB::cmd;
-    if ($my_cmd =~ m#\A$sh#gms) {
-
-        if ($my_cmd =~ m#\G\z#cgms) {
-            # Run the user's shell. If none defined, run Bourne.
-            # We resume execution when the shell terminates.
-            DB::_db_system( $ENV{SHELL} || "/bin/sh" );
+        # All of these commands were remapped in perl 5.8.0;
+        # we send them off to the secondary dispatcher (see below).
+        if (my ($cmd_letter, $my_arg) = $DB::cmd =~ /\A([<>\{]{1,2})\s*(.*)/so) {
+            DB::cmd_wrapper( $cmd_letter, $my_arg, $line );
             next CMD;
         }
-        elsif ($my_cmd =~ m#\G$sh\s*(.*)#cgms) {
-            # System it.
-            DB::_db_system($1);
-            next CMD;
-        }
-        elsif ($my_cmd =~ m#\G\s*(.*)#cgms) {
-            DB::_db_system( $ENV{SHELL} || "/bin/sh", "-c", $1 );
-            next CMD;
-        }
+
+        return;
     }
-}
-
-sub _handle_x_command {
-    my $self = shift;
-
-    if ($DB::cmd =~ s#\Ax\b# #) {    # Remainder gets done by DB::eval()
-        $onetimeDump = 'dump';    # main::dumpvar shows the output
-
-        # handle special  "x 3 blah" syntax XXX propagate
-        # doc back to special variables.
-        if ( $DB::cmd =~ s#\A\s*(\d+)(?=\s)# #) {
-            $onetimedumpDepth = $1;
-        }
-    }
-
-    return;
-}
-
-sub _handle_q_command {
-    my $self = shift;
-
-    if ($self->_is_full('q')) {
-        $fall_off_end = 1;
-        DB::clean_ENV();
-        exit $?;
-    }
-
-    return;
-}
-
-sub _handle_cmd_wrapper_commands {
-    my $self = shift;
-
-    DB::cmd_wrapper( $self->cmd_verb, $self->cmd_args, $line );
-    next CMD;
-}
-
-sub _handle_special_char_cmd_wrapper_commands {
-    my $self = shift;
-
-    # All of these commands were remapped in perl 5.8.0;
-    # we send them off to the secondary dispatcher (see below).
-    if (my ($cmd_letter, $my_arg) = $DB::cmd =~ /\A([<>\{]{1,2})\s*(.*)/so) {
-        DB::cmd_wrapper( $cmd_letter, $my_arg, $line );
-        next CMD;
-    }
-
-    return;
-}
 
 } ## end DB::Obj
 
